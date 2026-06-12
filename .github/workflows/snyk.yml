@@ -10,8 +10,9 @@ on:
     - cron: "0 3 * * 1"
 
 jobs:
-  snyk:
-    name: Snyk Vulnerability Scan
+  # ── Job 1: Scan third-party package/dependency vulnerabilities ──────────────
+  snyk-dependencies:
+    name: Snyk – Dependency Vulnerabilities
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -30,16 +31,80 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Run Snyk to check for vulnerabilities
+      - name: Snyk – test open-source dependencies
         uses: snyk/actions/node@master
-        continue-on-error: true # Allows pipeline to continue; results uploaded to GitHub
+        continue-on-error: true
         env:
           SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
         with:
-          args: --severity-threshold=high --sarif-file-output=snyk.sarif
+          # 'test' scans package.json / package-lock.json for known CVEs
+          command: test
+          args: --all-projects --severity-threshold=high --sarif-file-output=snyk-deps.sarif
 
-      - name: Upload Snyk results to GitHub Code Scanning
+      - name: Upload dependency scan results to GitHub Code Scanning
         uses: github/codeql-action/upload-sarif@v3
         if: always()
         with:
-          sarif_file: snyk.sarif
+          sarif_file: snyk-deps.sarif
+          category: snyk-dependencies
+
+  # ── Job 2: SAST – scan first-party source code for security issues ──────────
+  snyk-code:
+    name: Snyk – Source Code SAST
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: "npm"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Snyk – test source code (SAST)
+        uses: snyk/actions/node@master
+        continue-on-error: true
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+        with:
+          # 'code test' performs static analysis of your TypeScript source
+          command: code test
+          args: --severity-threshold=high --sarif-file-output=snyk-code.sarif
+
+      - name: Upload SAST results to GitHub Code Scanning
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: snyk-code.sarif
+          category: snyk-code
+
+  # ── Job 3: npm audit – lightweight built-in dependency check (no token) ─────
+  npm-audit:
+    name: npm audit
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: "npm"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run npm audit (high and critical)
+        run: npm audit --audit-level=high
