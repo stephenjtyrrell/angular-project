@@ -108,3 +108,63 @@ jobs:
 
       - name: Run npm audit (high and critical)
         run: npm audit --audit-level=high
+
+      # Explicit version-pinning check for CVEs that are not yet indexed in
+      # npm/GitHub advisory databases. Add entries here as new CVEs are
+      # disclosed but before the advisory DBs catch up.
+      - name: Check unindexed CVE mitigations
+        run: |
+          node - <<'EOF'
+          const { execSync } = require('child_process');
+          const tree = JSON.parse(execSync('npm ls --all --json 2>/dev/null').toString());
+
+          // List of packages whose installed version MUST be >= a minimum safe version.
+          // Format: { pkg, minSafe, cve, reason }
+          const checks = [
+            {
+              pkg: 'pacote',
+              minSafe: '21.5.1',
+              cve: 'CVE-2026-9496',
+              reason: 'DoS via addGitSha regex (CVSS 7.7 HIGH) – awaiting NVD indexing'
+            },
+          ];
+
+          function findVersions(node, name, found = []) {
+            if (!node || !node.dependencies) return found;
+            if (node.dependencies[name]) {
+              found.push(node.dependencies[name].version);
+              findVersions(node.dependencies[name], name, found);
+            }
+            for (const dep of Object.values(node.dependencies)) {
+              findVersions(dep, name, found);
+            }
+            return found;
+          }
+
+          function semverLt(a, b) {
+            const pa = a.split('.').map(Number);
+            const pb = b.split('.').map(Number);
+            for (let i = 0; i < 3; i++) {
+              if ((pa[i] || 0) < (pb[i] || 0)) return true;
+              if ((pa[i] || 0) > (pb[i] || 0)) return false;
+            }
+            return false;
+          }
+
+          let failed = false;
+          for (const { pkg, minSafe, cve, reason } of checks) {
+            const versions = findVersions(tree, pkg);
+            if (versions.length === 0) continue; // package not installed, skip
+            for (const v of versions) {
+              if (semverLt(v, minSafe)) {
+                console.error(`\u274C ${cve}: ${pkg}@${v} is vulnerable. Minimum safe version: ${minSafe}`);
+                console.error(`   Reason: ${reason}`);
+                failed = true;
+              } else {
+                console.log(`\u2714  ${cve}: ${pkg}@${v} meets minimum safe version (>= ${minSafe})`);
+              }
+            }
+          }
+
+          if (failed) process.exit(1);
+          EOF
